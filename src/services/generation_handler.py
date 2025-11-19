@@ -541,7 +541,7 @@ class GenerationHandler:
                                         debug_logger.log_info(f"Calling post_video_for_watermark_free with generation_id={generation_id}, prompt={prompt[:50]}...")
                                         post_id = await self.sora_client.post_video_for_watermark_free(
                                             generation_id=generation_id,
-                                            prompt=prompt,
+                                            prompt=prompt[:50],
                                             token=token
                                         )
                                         debug_logger.log_info(f"Received post_id: {post_id}")
