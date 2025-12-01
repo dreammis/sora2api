@@ -2,6 +2,7 @@
 import base64
 import io
 import time
+import asyncio
 import random
 import string
 from typing import Optional, Dict, Any
@@ -360,63 +361,80 @@ class SoraClient:
         if proxy_url:
             kwargs["proxy"] = proxy_url
 
-        try:
-            async with AsyncSession() as session:
-                # Record start time
-                start_time = time.time()
+        max_retries = 3
+        last_exception = None
 
-                # Make POST request to custom parse server
-                response = await session.post(f"{parse_url}/get-sora-link", **kwargs)
+        for attempt in range(max_retries):
+            try:
+                async with AsyncSession() as session:
+                    # Record start time
+                    start_time = time.time()
 
-                # Calculate duration
-                duration_ms = (time.time() - start_time) * 1000
+                    # Make POST request to custom parse server
+                    response = await session.post(f"{parse_url}/get-sora-link", **kwargs)
 
-                # Log response
-                debug_logger.log_response(
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    body=response.text if response.text else "No content",
-                    duration_ms=duration_ms
-                )
+                    # Calculate duration
+                    duration_ms = (time.time() - start_time) * 1000
 
-                # Check status
-                if response.status_code != 200:
-                    error_msg = f"Custom parse failed: {response.status_code} - {response.text}"
-                    debug_logger.log_error(
-                        error_message=error_msg,
+                    # Log response
+                    debug_logger.log_response(
                         status_code=response.status_code,
-                        response_text=response.text
+                        headers=dict(response.headers),
+                        body=response.text if response.text else "No content",
+                        duration_ms=duration_ms
                     )
-                    raise Exception(error_msg)
 
-                # Parse response
-                result = response.json()
+                    # Check status
+                    if response.status_code != 200:
+                        error_msg = f"Custom parse failed: {response.status_code} - {response.text}"
+                        debug_logger.log_error(
+                            error_message=error_msg,
+                            status_code=response.status_code,
+                            response_text=response.text
+                        )
+                        raise Exception(error_msg)
 
-                # Check for error in response
-                if "error" in result:
-                    error_msg = f"Custom parse error: {result['error']}"
-                    debug_logger.log_error(
-                        error_message=error_msg,
-                        status_code=401,
-                        response_text=str(result)
-                    )
-                    raise Exception(error_msg)
+                    # Parse response
+                    result = response.json()
 
-                # Extract download link
-                download_link = result.get("download_link")
-                if not download_link:
-                    raise Exception("No download_link in custom parse response")
+                    # Check for error in response
+                    if "error" in result:
+                        error_msg = f"Custom parse error: {result['error']}"
+                        debug_logger.log_error(
+                            error_message=error_msg,
+                            status_code=401,
+                            response_text=str(result)
+                        )
+                        raise Exception(error_msg)
 
-                debug_logger.log_info(f"Custom parse successful: {download_link}")
-                return download_link
+                    # Extract download link
+                    download_link = result.get("download_link")
+                    if not download_link:
+                        raise Exception("No download_link in custom parse response")
 
-        except Exception as e:
-            debug_logger.log_error(
-                error_message=f"Custom parse request failed: {str(e)}",
-                status_code=500,
-                response_text=str(e)
-            )
-            raise
+                    debug_logger.log_info(f"Custom parse successful: {download_link}")
+                    return download_link
+
+            except Exception as e:
+                last_exception = e
+                debug_logger.log_error(
+                    error_message=f"Custom parse request failed (Attempt {attempt + 1}/{max_retries}): {str(e)}",
+                    status_code=500,
+                    response_text=str(e)
+                )
+                
+                # If this was the last attempt, don't sleep, just raise
+                if attempt == max_retries - 1:
+                    raise last_exception
+                
+                # Exponential backoff: 1s, 2s, 4s...
+                sleep_time = 2 ** attempt
+                await asyncio.sleep(sleep_time)
+        
+        # Should not be reached if logic is correct, but as a fallback
+        if last_exception:
+            raise last_exception
+        raise Exception("Custom parse failed after max retries")
 
     # ==================== Character Creation Methods ====================
 
