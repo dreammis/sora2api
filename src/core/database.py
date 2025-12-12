@@ -53,20 +53,22 @@ class Database:
             # Get admin credentials from config_dict if provided, otherwise use defaults
             admin_username = "admin"
             admin_password = "admin"
+            api_key = "han1234"
             error_ban_threshold = 3
 
             if config_dict:
                 global_config = config_dict.get("global", {})
                 admin_username = global_config.get("admin_username", "admin")
                 admin_password = global_config.get("admin_password", "admin")
+                api_key = global_config.get("api_key", "han1234")
 
                 admin_config = config_dict.get("admin", {})
                 error_ban_threshold = admin_config.get("error_ban_threshold", 3)
 
             await db.execute("""
-                INSERT INTO admin_config (id, admin_username, admin_password, error_ban_threshold)
-                VALUES (1, ?, ?, ?)
-            """, (admin_username, admin_password, error_ban_threshold))
+                INSERT INTO admin_config (id, admin_username, admin_password, api_key, error_ban_threshold)
+                VALUES (1, ?, ?, ?, ?)
+            """, (admin_username, admin_password, api_key, error_ban_threshold))
 
         # Ensure proxy_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM proxy_config")
@@ -194,6 +196,7 @@ class Database:
                     ("video_enabled", "BOOLEAN DEFAULT 1"),
                     ("image_concurrency", "INTEGER DEFAULT -1"),
                     ("video_concurrency", "INTEGER DEFAULT -1"),
+                    ("client_id", "TEXT"),
                 ]
 
                 for col_name, col_type in columns_to_add:
@@ -204,11 +207,26 @@ class Database:
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
+            # Check and add missing columns to token_stats table
+            if await self._table_exists(db, "token_stats"):
+                columns_to_add = [
+                    ("consecutive_error_count", "INTEGER DEFAULT 0"),
+                ]
+
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "token_stats", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE token_stats ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to token_stats table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
             # Check and add missing columns to admin_config table
             if await self._table_exists(db, "admin_config"):
                 columns_to_add = [
                     ("admin_username", "TEXT DEFAULT 'admin'"),
                     ("admin_password", "TEXT DEFAULT 'admin'"),
+                    ("api_key", "TEXT DEFAULT 'han1234'"),
                 ]
 
                 for col_name, col_type in columns_to_add:
@@ -255,6 +273,7 @@ class Database:
                     name TEXT NOT NULL,
                     st TEXT,
                     rt TEXT,
+                    client_id TEXT,
                     remark TEXT,
                     expiry_time TIMESTAMP,
                     is_active BOOLEAN DEFAULT 1,
@@ -291,6 +310,7 @@ class Database:
                     today_video_count INTEGER DEFAULT 0,
                     today_error_count INTEGER DEFAULT 0,
                     today_date DATE,
+                    consecutive_error_count INTEGER DEFAULT 0,
                     FOREIGN KEY (token_id) REFERENCES tokens(id)
                 )
             """)
@@ -334,6 +354,7 @@ class Database:
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     admin_username TEXT DEFAULT 'admin',
                     admin_password TEXT DEFAULT 'admin',
+                    api_key TEXT DEFAULT 'han1234',
                     error_ban_threshold INTEGER DEFAULT 3,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -434,14 +455,15 @@ class Database:
             global_config = config_dict.get("global", {})
             admin_username = global_config.get("admin_username", "admin")
             admin_password = global_config.get("admin_password", "admin")
+            api_key = global_config.get("api_key", "han1234")
 
             if not is_first_startup:
                 # On upgrade, update the configuration
                 await db.execute("""
                     UPDATE admin_config
-                    SET admin_username = ?, admin_password = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
+                    SET admin_username = ?, admin_password = ?, api_key = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
-                """, (admin_username, admin_password, error_ban_threshold))
+                """, (admin_username, admin_password, api_key, error_ban_threshold))
 
             # Initialize proxy config
             proxy_config = config_dict.get("proxy", {})
@@ -546,12 +568,12 @@ class Database:
         """Add a new token"""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("""
-                INSERT INTO tokens (token, email, username, name, st, rt, remark, expiry_time, is_active,
+                INSERT INTO tokens (token, email, username, name, st, rt, client_id, remark, expiry_time, is_active,
                                    plan_type, plan_title, subscription_end, sora2_supported, sora2_invite_code,
                                    sora2_redeemed_count, sora2_total_count, sora2_remaining_count, sora2_cooldown_until,
                                    image_enabled, video_enabled, image_concurrency, video_concurrency)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (token.token, token.email, "", token.name, token.st, token.rt,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (token.token, token.email, "", token.name, token.st, token.rt, token.client_id,
                   token.remark, token.expiry_time, token.is_active,
                   token.plan_type, token.plan_title, token.subscription_end,
                   token.sora2_supported, token.sora2_invite_code,
@@ -686,6 +708,7 @@ class Database:
                           token: Optional[str] = None,
                           st: Optional[str] = None,
                           rt: Optional[str] = None,
+                          client_id: Optional[str] = None,
                           remark: Optional[str] = None,
                           expiry_time: Optional[datetime] = None,
                           plan_type: Optional[str] = None,
@@ -695,7 +718,7 @@ class Database:
                           video_enabled: Optional[bool] = None,
                           image_concurrency: Optional[int] = None,
                           video_concurrency: Optional[int] = None):
-        """Update token (AT, ST, RT, remark, expiry_time, subscription info, image_enabled, video_enabled)"""
+        """Update token (AT, ST, RT, client_id, remark, expiry_time, subscription info, image_enabled, video_enabled)"""
         async with aiosqlite.connect(self.db_path) as db:
             # Build dynamic update query
             updates = []
@@ -712,6 +735,10 @@ class Database:
             if rt is not None:
                 updates.append("rt = ?")
                 params.append(rt)
+
+            if client_id is not None:
+                updates.append("client_id = ?")
+                params.append(client_id)
 
             if remark is not None:
                 updates.append("remark = ?")
@@ -825,7 +852,7 @@ class Database:
             await db.commit()
     
     async def increment_error_count(self, token_id: int):
-        """Increment error count"""
+        """Increment error count (both total and consecutive)"""
         from datetime import date
         async with aiosqlite.connect(self.db_path) as db:
             today = str(date.today())
@@ -838,16 +865,18 @@ class Database:
                 await db.execute("""
                     UPDATE token_stats
                     SET error_count = error_count + 1,
+                        consecutive_error_count = consecutive_error_count + 1,
                         today_error_count = 1,
                         today_date = ?,
                         last_error_at = CURRENT_TIMESTAMP
                     WHERE token_id = ?
                 """, (today, token_id))
             else:
-                # Same day, just increment both
+                # Same day, just increment all counters
                 await db.execute("""
                     UPDATE token_stats
                     SET error_count = error_count + 1,
+                        consecutive_error_count = consecutive_error_count + 1,
                         today_error_count = today_error_count + 1,
                         today_date = ?,
                         last_error_at = CURRENT_TIMESTAMP
@@ -856,10 +885,10 @@ class Database:
             await db.commit()
     
     async def reset_error_count(self, token_id: int):
-        """Reset error count"""
+        """Reset consecutive error count (keep total error_count)"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                UPDATE token_stats SET error_count = 0 WHERE token_id = ?
+                UPDATE token_stats SET consecutive_error_count = 0 WHERE token_id = ?
             """, (token_id,))
             await db.commit()
     
@@ -941,16 +970,16 @@ class Database:
                 return AdminConfig(**dict(row))
             # If no row exists, return a default config with placeholder values
             # This should not happen in normal operation as _ensure_config_rows should create it
-            return AdminConfig(admin_username="admin", admin_password="admin")
+            return AdminConfig(admin_username="admin", admin_password="admin", api_key="han1234")
     
     async def update_admin_config(self, config: AdminConfig):
         """Update admin configuration"""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 UPDATE admin_config
-                SET admin_username = ?, admin_password = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
+                SET admin_username = ?, admin_password = ?, api_key = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
-            """, (config.admin_username, config.admin_password, config.error_ban_threshold))
+            """, (config.admin_username, config.admin_password, config.api_key, config.error_ban_threshold))
             await db.commit()
     
     # Proxy config operations
