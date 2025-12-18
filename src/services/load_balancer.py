@@ -79,6 +79,10 @@ class LoadBalancer:
                 if token and token.sora2_cooldown_until and token.sora2_cooldown_until > datetime.now():
                     continue
 
+                # Skip tokens with exhausted remaining count (<= 1)
+                if token and token.sora2_remaining_count <= 1:
+                    continue
+
                 if token:
                     available_tokens.append(token)
 

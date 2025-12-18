@@ -724,6 +724,7 @@ class TokenManager:
         sora2_redeemed_count = 0
         sora2_total_count = 0
         sora2_remaining_count = 0
+        sora2_cooldown_until = None
         try:
             sora2_info = await self.get_sora2_invite_code(token_value)
             sora2_supported = sora2_info.get("supported", False)
@@ -737,7 +738,15 @@ class TokenManager:
                     remaining_info = await self.get_sora2_remaining_count(token_value)
                     if remaining_info.get("success"):
                         sora2_remaining_count = remaining_info.get("remaining_count", 0)
+                        rate_limit_reached = remaining_info.get("rate_limit_reached", False)
                         print(f"✅ Sora2剩余次数: {sora2_remaining_count}")
+
+                        # Check if quota is exhausted already
+                        if sora2_remaining_count <= 1 or rate_limit_reached:
+                            reset_seconds = remaining_info.get("access_resets_in_seconds", 0)
+                            if reset_seconds > 0:
+                                sora2_cooldown_until = datetime.now() + timedelta(seconds=reset_seconds)
+                                print(f"⏱️ 添加发现Token额度不足，预设冷却时间至: {sora2_cooldown_until}")
                 except Exception as e:
                     print(f"Failed to get Sora2 remaining count: {e}")
         except Exception as e:
@@ -803,6 +812,7 @@ class TokenManager:
             sora2_redeemed_count=sora2_redeemed_count,
             sora2_total_count=sora2_total_count,
             sora2_remaining_count=sora2_remaining_count,
+            sora2_cooldown_until=sora2_cooldown_until,
             image_enabled=image_enabled,
             video_enabled=video_enabled,
             image_concurrency=image_concurrency,
@@ -950,6 +960,23 @@ class TokenManager:
                 except Exception as e:
                     print(f"Failed to get Sora2 remaining count: {e}")
 
+            # Check if quota is exhausted already during test
+            if sora2_supported:
+                # Use remaining_count <= 1 as exhausted indicator
+                if sora2_remaining_count <= 1:
+                    # If we have reset info, set cooldown
+                    try:
+                        remaining_info = await self.get_sora2_remaining_count(token_data.token)
+                        if remaining_info.get("success"):
+                            reset_seconds = remaining_info.get("access_resets_in_seconds", 0)
+                            if reset_seconds > 0:
+                                from datetime import timedelta
+                                cooldown_until = datetime.now() + timedelta(seconds=reset_seconds)
+                                await self.db.update_token_sora2_cooldown(token_id, cooldown_until)
+                                print(f"⏱️ 测试发现Token {token_id} 额度不足，设置冷却时间至: {cooldown_until}")
+                    except Exception as e:
+                        print(f"Failed to set cooldown during test: {e}")
+
             # Update token Sora2 info in database
             await self.db.update_token_sora2(
                 token_id,
@@ -960,6 +987,9 @@ class TokenManager:
                 remaining_count=sora2_remaining_count
             )
 
+            # Get latest token data to include cooldown if it was just set
+            updated_token = await self.db.get_token(token_id)
+
             return {
                 "valid": True,
                 "message": "Token is valid",
@@ -969,7 +999,8 @@ class TokenManager:
                 "sora2_invite_code": sora2_invite_code,
                 "sora2_redeemed_count": sora2_redeemed_count,
                 "sora2_total_count": sora2_total_count,
-                "sora2_remaining_count": sora2_remaining_count
+                "sora2_remaining_count": sora2_remaining_count,
+                "sora2_cooldown_until": updated_token.sora2_cooldown_until if updated_token else None
             }
         except Exception as e:
             return {
@@ -1012,13 +1043,13 @@ class TokenManager:
                         await self.db.update_token_sora2_remaining(token_id, remaining_count)
                         print(f"✅ 更新Token {token_id} 的Sora2剩余次数: {remaining_count}")
 
-                        # If remaining count is 0, set cooldown
-                        if remaining_count == 0:
+                        # If remaining count is <= 1 or rate limit reached, set cooldown
+                        if remaining_count <= 1 or remaining_info.get("rate_limit_reached"):
                             reset_seconds = remaining_info.get("access_resets_in_seconds", 0)
                             if reset_seconds > 0:
                                 cooldown_until = datetime.now() + timedelta(seconds=reset_seconds)
                                 await self.db.update_token_sora2_cooldown(token_id, cooldown_until)
-                                print(f"⏱️ Token {token_id} 剩余次数为0，设置冷却时间至: {cooldown_until}")
+                                print(f"⏱️ Token {token_id} 额度耗尽(count: {remaining_count})，设置冷却时间至: {cooldown_until}")
             except Exception as e:
                 print(f"Failed to update Sora2 remaining count: {e}")
     
@@ -1037,10 +1068,23 @@ class TokenManager:
                     remaining_info = await self.get_sora2_remaining_count(token_data.token)
                     if remaining_info.get("success"):
                         remaining_count = remaining_info.get("remaining_count", 0)
+                        rate_limit_reached = remaining_info.get("rate_limit_reached", False)
+                        
                         await self.db.update_token_sora2_remaining(token_id, remaining_count)
-                        # Clear cooldown
-                        await self.db.update_token_sora2_cooldown(token_id, None)
-                        print(f"✅ Token {token_id} Sora2剩余次数已刷新: {remaining_count}")
+                        
+                        # Only clear cooldown if we actually have quota now
+                        if remaining_count > 1 and not rate_limit_reached:
+                            await self.db.update_token_sora2_cooldown(token_id, None)
+                            print(f"✅ Token {token_id} Sora2额度已恢复: {remaining_count}，解除冷却。")
+                        else:
+                            # Still no quota, update cooldown time if possible
+                            reset_seconds = remaining_info.get("access_resets_in_seconds", 0)
+                            if reset_seconds > 0:
+                                cooldown_until = datetime.now() + timedelta(seconds=reset_seconds)
+                                await self.db.update_token_sora2_cooldown(token_id, cooldown_until)
+                                print(f"⏱️ Token {token_id} 刷新后依然无额度({remaining_count})，维持冷却至: {cooldown_until}")
+                            else:
+                                print(f"⚠️ Token {token_id} 刷新后依然无额度({remaining_count})。")
                 except Exception as e:
                     print(f"Failed to refresh Sora2 remaining count: {e}")
         except Exception as e:

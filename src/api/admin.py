@@ -330,7 +330,8 @@ async def test_token(token_id: int, token: str = Depends(verify_admin_token)):
                 "sora2_invite_code": result.get("sora2_invite_code"),
                 "sora2_redeemed_count": result.get("sora2_redeemed_count"),
                 "sora2_total_count": result.get("sora2_total_count"),
-                "sora2_remaining_count": result.get("sora2_remaining_count")
+                "sora2_remaining_count": result.get("sora2_remaining_count"),
+                "sora2_cooldown_until": result.get("sora2_cooldown_until").isoformat() if result.get("sora2_cooldown_until") else None
             })
 
         return response
