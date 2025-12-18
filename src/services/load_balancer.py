@@ -69,8 +69,13 @@ class LoadBalancer:
                 if not token.sora2_supported:
                     continue
 
-                # Check if Sora2 cooldown has expired and refresh if needed
-                if token.sora2_cooldown_until and token.sora2_cooldown_until <= datetime.now():
+                # Check for Sora2 cooldown and trigger refresh/self-healing
+                # Conditions to refresh:
+                # 1. Cooldown has expired
+                # 2. Token seems exhausted (<= 1) but no cooldown timestamp is set (Zombie Account)
+                if (token.sora2_cooldown_until and token.sora2_cooldown_until <= datetime.now()) or \
+                   (not token.sora2_cooldown_until and token.sora2_remaining_count <= 1):
+                    
                     await self.token_manager.refresh_sora2_remaining_if_cooldown_expired(token.id)
                     # Reload token data after refresh
                     token = await self.token_manager.db.get_token(token.id)
