@@ -301,6 +301,15 @@ async def disable_token(token_id: int, token: str = Depends(verify_admin_token))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@router.post("/api/tokens/enable-all")
+async def enable_all_tokens(token: str = Depends(verify_admin_token)):
+    """Enable all tokens and reset error counts"""
+    try:
+        await token_manager.enable_all_tokens()
+        return {"success": True, "message": "所有禁用账号已成功启用并重置错误计数"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"一键启用失败: {str(e)}")
+
 @router.post("/api/tokens/{token_id}/test")
 async def test_token(token_id: int, token: str = Depends(verify_admin_token)):
     """Test if a token is valid and refresh Sora2 info"""

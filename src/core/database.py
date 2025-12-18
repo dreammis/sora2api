@@ -891,6 +891,15 @@ class Database:
                 UPDATE token_stats SET consecutive_error_count = 0 WHERE token_id = ?
             """, (token_id,))
             await db.commit()
+
+    async def enable_all_tokens(self):
+        """Enable all tokens and reset all consecutive error counts"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Enable all tokens
+            await db.execute("UPDATE tokens SET is_active = 1")
+            # Reset all consecutive error counts
+            await db.execute("UPDATE token_stats SET consecutive_error_count = 0")
+            await db.commit()
     
     # Task operations
     async def create_task(self, task: Task) -> int:

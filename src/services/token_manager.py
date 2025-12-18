@@ -914,6 +914,10 @@ class TokenManager:
         # Reset error count when enabling (in token_stats table)
         await self.db.reset_error_count(token_id)
 
+    async def enable_all_tokens(self):
+        """Enable all tokens and reset all error counts"""
+        await self.db.enable_all_tokens()
+
     async def disable_token(self, token_id: int):
         """Disable a token"""
         await self.db.update_token_status(token_id, False)
